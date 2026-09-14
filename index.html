@@ -143,21 +143,29 @@
                     'location': `${flightInfo.departureAirport}空港`
                 };
 
-                const request = gapi.client.calendar.events.insert({
+                // APIのレスポンス（作成されたイベントの詳細）を受け取る
+                const response = await gapi.client.calendar.events.insert({
                     'calendarId': 'primary',
                     'resource': event
                 });
 
-                await request;
-                messageEl.className = 'text-sm text-center font-medium text-green-600';
-                messageEl.innerText = 'カレンダーへの登録が完了しました！';
+                const createdEvent = response.result;
+
+                messageEl.className = 'text-sm text-center font-medium text-green-600 space-y-2';
+                messageEl.innerHTML = `
+                    <p>カレンダーへの登録が完了しました！</p>
+                    <p class="text-xs text-slate-500">登録日時: ${flightInfo.departureDateTime} から</p>
+                    <a href="${createdEvent.htmlLink}" target="_blank" class="inline-block mt-2 text-blue-600 underline font-semibold hover:text-blue-800">
+                        📅 Googleカレンダーでこの予定を開く
+                    </a>
+                `;
             } catch (error) {
                 console.error(error);
                 messageEl.className = 'text-sm text-center font-medium text-red-600';
                 messageEl.innerText = 'エラー: ' + (error.message || 'メールフォーマットの解析に失敗しました。');
             }
         }
-
+        
         // ANAメールのテキスト解析ロジック（簡易版サンプル）
         function parseAnaEmail(text) {
             // 例: 「便名： NH011」「搭乗日： 2026年10月1日」「発： 08:00」「着： 09:15」などのパターンを想定
