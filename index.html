@@ -36,13 +36,13 @@
             カレンダーに予定を追加
         </button>
 
+        <!-- 結果・デバッグ表示エリア -->
         <div id="result-message" class="text-sm text-center font-medium"></div>
     </div>
 
     <script>
-        // CLIENT_ID と API_KEY は Google Cloud Console で取得したものを設定してください
-        const CLIENT_ID = '189842885331-4ej08sk9t8kqkg5jaf81ltevt73sqvgt.apps.googleusercontent.com';
-        const API_KEY = 'AIzaSyDmnYNJpLwozgOMVTMzP2oF6vfgx1p9JnY';
+        const CLIENT_ID = 'YOUR_GOOGLE_CLIENT_ID.apps.googleusercontent.com';
+        const API_KEY = 'YOUR_GOOGLE_API_KEY';
         const SCOPES = 'https://www.googleapis.com/auth/calendar.events';
 
         let tokenClient;
@@ -72,13 +72,12 @@
             tokenClient = google.accounts.oauth2.initTokenClient({
                 client_id: CLIENT_ID,
                 scope: SCOPES,
-                callback: '', // 後から動的に設定
+                callback: '',
             });
             gisInited = true;
             checkApiLoaded();
         }
 
-        // 自動でGoogle Scriptの読み込み完了時にフック
         window.onload = function() {
             gapiLoaded();
             gisLoaded();
@@ -120,7 +119,6 @@
             }
         }
 
-        // ANAメールのパース処理とカレンダー登録
         async function parseAndAddCalendar() {
             const text = document.getElementById('email-body').value;
             const messageEl = document.getElementById('result-message');
@@ -131,7 +129,7 @@
                 
                 const event = {
                     'summary': `ANA ${flightInfo.flightNumber} (${flightInfo.departureAirport} → ${flightInfo.arrivalAirport})`,
-                    'description': `便名: ${flightInfo.flightNumber}\n区間: ${flightInfo.departureAirport} → ${flightInfo.arrivalAirport}\n座席: ${flightInfo.seat || '未指定'}`,
+                    'description': `便名: ${flightInfo.flightNumber}\n区間: ${flightInfo.departureAirport} → ${flightInfo.arrivalAirport}`,
                     'start': {
                         'dateTime': flightInfo.departureDateTime,
                         'timeZone': 'Asia/Tokyo'
@@ -143,7 +141,6 @@
                     'location': `${flightInfo.departureAirport}空港`
                 };
 
-                // APIのレスポンス（作成されたイベントの詳細）を受け取る
                 const response = await gapi.client.calendar.events.insert({
                     'calendarId': 'primary',
                     'resource': event
@@ -151,32 +148,33 @@
 
                 const createdEvent = response.result;
 
-                messageEl.className = 'text-sm text-center font-medium text-green-600 space-y-2';
+                // 登録成功時に、実際に解釈された日時とカレンダーへの直リンクを表示する
+                messageEl.className = 'text-left bg-green-50 border border-green-200 p-4 rounded-lg space-y-2 text-slate-700';
                 messageEl.innerHTML = `
-                    <p>カレンダーへの登録が完了しました！</p>
-                    <p class="text-xs text-slate-500">登録日時: ${flightInfo.departureDateTime} から</p>
-                    <a href="${createdEvent.htmlLink}" target="_blank" class="inline-block mt-2 text-blue-600 underline font-semibold hover:text-blue-800">
-                        📅 Googleカレンダーでこの予定を開く
-                    </a>
+                    <p class="font-bold text-green-700">✓ カレンダーへの登録が完了しました！</p>
+                    <div class="text-xs space-y-1 bg-white p-2 rounded border border-green-100">
+                        <p><strong>認識された便名:</strong> ${flightInfo.flightNumber}</p>
+                        <p><strong>出発日時:</strong> ${flightInfo.departureDateTime}</p>
+                        <p><strong>到着日時:</strong> ${flightInfo.arrivalDateTime}</p>
+                    </div>
+                    <div class="text-center pt-2">
+                        <a href="${createdEvent.htmlLink}" target="_blank" class="inline-block bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold px-4 py-2 rounded transition">
+                            📅 Googleカレンダーでこの予定を開く
+                        </a>
+                    </div>
                 `;
             } catch (error) {
                 console.error(error);
-                messageEl.className = 'text-sm text-center font-medium text-red-600';
+                messageEl.className = 'text-sm text-center font-medium text-red-600 bg-red-50 p-3 rounded-lg';
                 messageEl.innerText = 'エラー: ' + (error.message || 'メールフォーマットの解析に失敗しました。');
             }
         }
-        
-        // ANAメールのテキスト解析ロジック（簡易版サンプル）
+
         function parseAnaEmail(text) {
-            // 例: 「便名： NH011」「搭乗日： 2026年10月1日」「発： 08:00」「着： 09:15」などのパターンを想定
-            // ※実際のANAメールの形式にあわせて正規表現チューニングを適宜調整してください
-            
             const flightMatch = text.match(/(?:便名|Flight)[\s ]*[:：]?[\s ]*([A-Z0-9]+)/i);
             const dateMatch = text.match(/(\d{4})年(\d{1,2})月(\d{1,2})日/);
             const timeMatch = text.match(/(\d{1,2}):(\d{2})[\s ]*(?:発|出発).*?(\d{1,2}):(\d{2})[\s ]*(?:着|到着)/s) || 
                               text.match(/出発時間[：:]\s*(\d{1,2}):(\d{2}).*?到着時間[：:]\s*(\d{1,2}):(\d{2})/s);
-            
-            const routeMatch = text.match(/([^\n\r]+)[\s ]*[→ー―-][\s ]*([^\n\r]+)/);
 
             if (!dateMatch || !timeMatch) {
                 throw new Error("日付または時刻の情報を抽出できませんでした。メール本文を確認してください。");
@@ -198,8 +196,8 @@
                 flightNumber: flightMatch ? flightMatch[1] : 'ANA',
                 departureDateTime,
                 arrivalDateTime,
-                departureAirport: '出発空港', // 必要に応じメールから抽出ロジックを拡張
-                arrivalAirport: '到着空港'
+                departureAirport: '出発',
+                arrivalAirport: '到着'
             };
         }
     </script>
