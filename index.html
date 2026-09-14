@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ANA予約メール カレンダー登録</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Google Identity Services & API Client -->
+    <script src="https://accounts.google.com/gsi/client" async defer></script>
+    <script src="https://apis.google.com/js/api.js" async defer></script>
+</head>
+<body class="bg-slate-50 text-slate-800 min-h-screen flex flex-col items-center justify-center p-4">
+
+    <div class="max-w-xl w-full bg-white rounded-xl shadow-md p-6 space-y-6">
+        <header class="border-b pb-4">
+            <h1 class="text-xl font-bold text-slate-900">ANA 予約メール -> カレンダー登録</h1>
+            <p class="text-sm text-slate-500 mt-1">予約メールの本文を貼り付けてGoogleカレンダーにワンクリックで追加します。</p>
+        </header>
+
+        <!-- 認証セクション -->
+        <div id="auth-section" class="flex items-center justify-between bg-slate-100 p-4 rounded-lg">
+            <span id="auth-status" class="text-sm font-medium text-slate-600">Googleアカウント未連携</span>
+            <button id="auth-button" onclick="handleAuthClick()" class="bg-blue-600 hover:bg-blue-700 text-white text-sm font-semibold px-4 py-2 rounded-lg transition">
+                Googleログイン
+            </button>
+        </div>
+
+        <!-- 入力セクション -->
+        <div class="space-y-2">
+            <label for="email-body" class="block text-sm font-medium text-slate-700">ANA予約確認メールの本文</label>
+            <textarea id="email-body" rows="10" placeholder="ここにANAからの予約確認メールを貼り付けてください..." class="w-full border border-slate-300 rounded-lg p-3 text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none"></textarea>
+        </div>
+
+        <!-- アクション -->
+        <button id="submit-button" onclick="parseAndAddCalendar()" disabled class="w-full bg-slate-300 text-slate-500 font-semibold py-3 rounded-lg transition cursor-not-allowed">
+            カレンダーに予定を追加
+        </button>
+
+        <div id="result-message" class="text-sm text-center font-medium"></div>
+    </div>
+
+    <script>
+        // CLIENT_ID と API_KEY は Google Cloud Console で取得したものを設定してください
+        const CLIENT_ID = 'YOUR_GOOGLE_CLIENT_ID.apps.googleusercontent.com';
+        const API_KEY = 'YOUR_GOOGLE_API_KEY';
+        const SCOPES = 'https://www.googleapis.com/auth/calendar.events';
+
+        let tokenClient;
+        let gapiInited = false;
+        let gisInited = false;
+
+        function checkApiLoaded() {
+            if (gapiInited && gisInited) {
+                document.getElementById('submit-button').removeAttribute('disabled');
+            }
+        }
+
+        function gapiLoaded() {
+            gapi.load('client', initializeGapiClient);
+        }
+
+        async function initializeGapiClient() {
+            await gapi.client.init({
+                apiKey: API_KEY,
+                discoveryDocs: ['https://www.googleapis.com/discovery/v1/apis/calendar/v3/rest'],
+            });
+            gapiInited = true;
+            checkApiLoaded();
+        }
+
+        function gisLoaded() {
+            tokenClient = google.accounts.oauth2.initTokenClient({
+                client_id: CLIENT_ID,
+                scope: SCOPES,
+                callback: '', // 後から動的に設定
+            });
+            gisInited = true;
+            checkApiLoaded();
+        }
+
+        // 自動でGoogle Scriptの読み込み完了時にフック
+        window.onload = function() {
+            gapiLoaded();
+            gisLoaded();
+        };
+
+        function handleAuthClick() {
+            tokenClient.callback = async (resp) => {
+                if (resp.error !== undefined) {
+                    throw (resp);
+                }
+                document.getElementById('auth-status').innerText = 'Googleアカウント連携済み';
+                document.getElementById('auth-button').innerText = 'ログアウト / 再認証';
+                document.getElementById('auth-button').onclick = handleSignout;
+                
+                const btn = document.getElementById('submit-button');
+                btn.classList.remove('bg-slate-300', 'text-slate-500', 'cursor-not-allowed');
+                btn.classList.add('bg-blue-600', 'hover:bg-blue-700', 'text-white');
+            };
+
+            if (gapi.client.getToken() === null) {
+                tokenClient.requestAccessToken({prompt: 'consent'});
+            } else {
+                tokenClient.requestAccessToken({prompt: ''});
+            }
+        }
+
+        function handleSignout() {
+            const token = gapi.client.getToken();
+            if (token !== null) {
+                google.accounts.oauth2.revoke(token.access_token, () => {
+                    gapi.client.setToken('');
+                    document.getElementById('auth-status').innerText = 'Googleアカウント未連携';
+                    document.getElementById('auth-button').innerText = 'Googleログイン';
+                    document.getElementById('auth-button').onclick = handleAuthClick;
+                    const btn = document.getElementById('submit-button');
+                    btn.classList.add('bg-slate-300', 'text-slate-500', 'cursor-not-allowed');
+                    btn.classList.remove('bg-blue-600', 'hover:bg-blue-700', 'text-white');
+                });
+            }
+        }
+
+        // ANAメールのパース処理とカレンダー登録
+        async function parseAndAddCalendar() {
+            const text = document.getElementById('email-body').value;
+            const messageEl = document.getElementById('result-message');
+            messageEl.innerText = '';
+
+            try {
+                const flightInfo = parseAnaEmail(text);
+                
+                const event = {
+                    'summary': `ANA ${flightInfo.flightNumber} (${flightInfo.departureAirport} → ${flightInfo.arrivalAirport})`,
+                    'description': `便名: ${flightInfo.flightNumber}\n区間: ${flightInfo.departureAirport} → ${flightInfo.arrivalAirport}\n座席: ${flightInfo.seat || '未指定'}`,
+                    'start': {
+                        'dateTime': flightInfo.departureDateTime,
+                        'timeZone': 'Asia/Tokyo'
+                    },
+                    'end': {
+                        'dateTime': flightInfo.arrivalDateTime,
+                        'timeZone': 'Asia/Tokyo'
+                    },
+                    'location': `${flightInfo.departureAirport}空港`
+                };
+
+                const request = gapi.client.calendar.events.insert({
+                    'calendarId': 'primary',
+                    'resource': event
+                });
+
+                await request;
+                messageEl.className = 'text-sm text-center font-medium text-green-600';
+                messageEl.innerText = 'カレンダーへの登録が完了しました！';
+            } catch (error) {
+                console.error(error);
+                messageEl.className = 'text-sm text-center font-medium text-red-600';
+                messageEl.innerText = 'エラー: ' + (error.message || 'メールフォーマットの解析に失敗しました。');
+            }
+        }
+
+        // ANAメールのテキスト解析ロジック（簡易版サンプル）
+        function parseAnaEmail(text) {
+            // 例: 「便名： NH011」「搭乗日： 2026年10月1日」「発： 08:00」「着： 09:15」などのパターンを想定
+            // ※実際のANAメールの形式にあわせて正規表現チューニングを適宜調整してください
+            
+            const flightMatch = text.match(/(?:便名|Flight)[\s ]*[:：]?[\s ]*([A-Z0-9]+)/i);
+            const dateMatch = text.match(/(\d{4})年(\d{1,2})月(\d{1,2})日/);
+            const timeMatch = text.match(/(\d{1,2}):(\d{2})[\s ]*(?:発|出発).*?(\d{1,2}):(\d{2})[\s ]*(?:着|到着)/s) || 
+                              text.match(/出発時間[：:]\s*(\d{1,2}):(\d{2}).*?到着時間[：:]\s*(\d{1,2}):(\d{2})/s);
+            
+            const routeMatch = text.match(/([^\n\r]+)[\s ]*[→ー―-][\s ]*([^\n\r]+)/);
+
+            if (!dateMatch || !timeMatch) {
+                throw new Error("日付または時刻の情報を抽出できませんでした。メール本文を確認してください。");
+            }
+
+            const year = dateMatch[1];
+            const month = dateMatch[2].padStart(2, '0');
+            const day = dateMatch[3].padStart(2, '0');
+
+            const depHour = timeMatch[1].padStart(2, '0');
+            const depMin = timeMatch[2].padStart(2, '0');
+            const arrHour = timeMatch[3].padStart(2, '0');
+            const arrMin = timeMatch[4].padStart(2, '0');
+
+            const departureDateTime = `${year}-${month}-${day}T${depHour}:${depMin}:00`;
+            const arrivalDateTime = `${year}-${month}-${day}T${arrHour}:${arrMin}:00`;
+
+            return {
+                flightNumber: flightMatch ? flightMatch[1] : 'ANA',
+                departureDateTime,
+                arrivalDateTime,
+                departureAirport: '出発空港', // 必要に応じメールから抽出ロジックを拡張
+                arrivalAirport: '到着空港'
+            };
+        }
+    </script>
+</body>
+</html>
