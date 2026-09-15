@@ -3,9 +3,8 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>ANA予約メール カレンダー登録</title>
+    <title>ANA予約メール 自動カレンダー登録</title>
     <script src="https://cdn.tailwindcss.com"></script>
-    <!-- Google Identity Services & API Client -->
     <script src="https://accounts.google.com/gsi/client" async defer></script>
     <script src="https://apis.google.com/js/api.js" async defer></script>
 </head>
@@ -13,8 +12,8 @@
 
     <div class="max-w-xl w-full bg-white rounded-xl shadow-md p-6 space-y-6">
         <header class="border-b pb-4">
-            <h1 class="text-xl font-bold text-slate-900">ANA 予約メール -> カレンダー登録</h1>
-            <p class="text-sm text-slate-500 mt-1">予約メールの本文を貼り付けてGoogleカレンダーにワンクリックで追加します。</p>
+            <h1 class="text-xl font-bold text-slate-900">ANA予約メール 連携ツール</h1>
+            <p class="text-sm text-slate-500 mt-1">GmailからANAの予約メールを自動抽出し、Googleカレンダーに追加します。</p>
         </header>
 
         <!-- 認証セクション -->
@@ -25,16 +24,15 @@
             </button>
         </div>
 
-        <!-- 入力セクション -->
-        <div class="space-y-2">
-            <label for="email-body" class="block text-sm font-medium text-slate-700">ANA予約確認メールの本文</label>
-            <textarea id="email-body" rows="10" placeholder="ここにANAからの予約確認メールを貼り付けてください..." class="w-full border border-slate-300 rounded-lg p-3 text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none"></textarea>
+        <!-- Gmail検索セクション -->
+        <div class="space-y-4">
+            <button id="fetch-button" onclick="fetchAnaEmails()" disabled class="w-full bg-slate-300 text-slate-500 font-semibold py-3 rounded-lg transition cursor-not-allowed">
+                GmailからANAの予約メールを探す
+            </button>
+            
+            <!-- メール一覧表示エリア -->
+            <div id="email-list" class="space-y-2 max-h-64 overflow-y-auto"></div>
         </div>
-
-        <!-- アクション -->
-        <button id="submit-button" onclick="parseAndAddCalendar()" disabled class="w-full bg-slate-300 text-slate-500 font-semibold py-3 rounded-lg transition cursor-not-allowed">
-            カレンダーに予定を追加
-        </button>
 
         <!-- 結果表示エリア -->
         <div id="result-message" class="text-sm text-center font-medium"></div>
@@ -43,15 +41,17 @@
     <script>
         const CLIENT_ID = '189842885331-4ej08sk9t8kqkg5jaf81ltevt73sqvgt.apps.googleusercontent.com';
         const API_KEY = 'AIzaSyDmnYNJpLwozgOMVTMzP2oF6vfgx1p9JnY';
-        const SCOPES = 'https://www.googleapis.com/auth/calendar.events';
+        // ★ カレンダー権限に加えて、Gmailの読み取り権限（readonly）を追加しました
+        const SCOPES = 'https://www.googleapis.com/auth/calendar.events https://www.googleapis.com/auth/gmail.readonly';
 
         let tokenClient;
         let gapiInited = false;
         let gisInited = false;
+        let fetchedEmails = []; // 取得したメールのデータを一時保存する配列
 
         function checkApiLoaded() {
             if (gapiInited && gisInited) {
-                document.getElementById('submit-button').removeAttribute('disabled');
+                // 初期状態ではログインボタンのみ有効
             }
         }
 
@@ -62,7 +62,11 @@
         async function initializeGapiClient() {
             await gapi.client.init({
                 apiKey: API_KEY,
-                discoveryDocs: ['https://www.googleapis.com/discovery/v1/apis/calendar/v3/rest'],
+                // ★ Gmail API と Calendar API の両方を読み込む
+                discoveryDocs: [
+                    'https://www.googleapis.com/discovery/v1/apis/calendar/v3/rest',
+                    'https://www.googleapis.com/discovery/v1/apis/gmail/v1/rest'
+                ],
             });
             gapiInited = true;
             checkApiLoaded();
@@ -89,12 +93,14 @@
                     throw (resp);
                 }
                 document.getElementById('auth-status').innerText = 'Googleアカウント連携済み';
-                document.getElementById('auth-button').innerText = 'ログアウト / 再認証';
+                document.getElementById('auth-button').innerText = 'ログアウト';
                 document.getElementById('auth-button').onclick = handleSignout;
                 
-                const btn = document.getElementById('submit-button');
+                // ログイン成功したら「検索ボタン」を有効化
+                const btn = document.getElementById('fetch-button');
                 btn.classList.remove('bg-slate-300', 'text-slate-500', 'cursor-not-allowed');
                 btn.classList.add('bg-blue-600', 'hover:bg-blue-700', 'text-white');
+                btn.removeAttribute('disabled');
             };
 
             if (gapi.client.getToken() === null) {
@@ -112,19 +118,132 @@
                     document.getElementById('auth-status').innerText = 'Googleアカウント未連携';
                     document.getElementById('auth-button').innerText = 'Googleログイン';
                     document.getElementById('auth-button').onclick = handleAuthClick;
-                    const btn = document.getElementById('submit-button');
+                    
+                    const btn = document.getElementById('fetch-button');
                     btn.classList.add('bg-slate-300', 'text-slate-500', 'cursor-not-allowed');
                     btn.classList.remove('bg-blue-600', 'hover:bg-blue-700', 'text-white');
+                    btn.setAttribute('disabled', 'true');
+                    document.getElementById('email-list').innerHTML = '';
+                    document.getElementById('result-message').innerHTML = '';
                 });
             }
         }
 
-        async function parseAndAddCalendar() {
-            const text = document.getElementById('email-body').value;
+        // ==========================================
+        // 1. Gmailからメールを検索・取得する処理
+        // ==========================================
+        async function fetchAnaEmails() {
+            const listEl = document.getElementById('email-list');
             const messageEl = document.getElementById('result-message');
-            messageEl.innerText = '';
+            const btn = document.getElementById('fetch-button');
+            
+            btn.innerText = '検索中...';
+            btn.setAttribute('disabled', 'true');
+            listEl.innerHTML = '';
+            messageEl.innerHTML = '';
+            fetchedEmails = [];
 
             try {
+                // Gmail APIでメールを検索 (ana.co.jpから届いた「フライト詳細」を含む直近5件)
+                const response = await gapi.client.gmail.users.messages.list({
+                    'userId': 'me',
+                    'q': 'from:ana.co.jp "フライト詳細"',
+                    'maxResults': 5
+                });
+
+                const messages = response.result.messages;
+                if (!messages || messages.length === 0) {
+                    listEl.innerHTML = '<p class="text-sm text-slate-500 text-center py-4">ANAの予約メールが見つかりませんでした。</p>';
+                    return;
+                }
+
+                // 取得したメールIDをもとに詳細（件名、日付、本文）を取得
+                let htmlStr = '';
+                for (let i = 0; i < messages.length; i++) {
+                    const msgDetail = await gapi.client.gmail.users.messages.get({
+                        'userId': 'me',
+                        'id': messages[i].id
+                    });
+
+                    const headers = msgDetail.result.payload.headers;
+                    const subjectHeader = headers.find(h => h.name === 'Subject');
+                    const dateHeader = headers.find(h => h.name === 'Date');
+                    
+                    const subject = subjectHeader ? subjectHeader.value : '件名なし';
+                    // 日付を見やすく整形
+                    const dateObj = new Date(dateHeader.value);
+                    const dateStr = `${dateObj.getFullYear()}/${dateObj.getMonth()+1}/${dateObj.getDate()}`;
+
+                    // 本文のデコード処理
+                    const bodyText = getEmailBodyStr(msgDetail.result.payload);
+                    
+                    // 配列に保存（後でパースするため）
+                    fetchedEmails.push(bodyText);
+
+                    // リストUIを作成
+                    htmlStr += `
+                        <div class="p-3 border border-slate-200 rounded-lg flex items-center justify-between hover:bg-slate-50">
+                            <div class="overflow-hidden">
+                                <p class="text-xs text-slate-500 mb-1">受信日: ${dateStr}</p>
+                                <p class="text-sm font-medium text-slate-700 truncate">${subject}</p>
+                            </div>
+                            <button onclick="parseAndAddCalendar(${i})" class="ml-4 shrink-0 bg-blue-100 hover:bg-blue-200 text-blue-700 text-xs font-bold px-3 py-2 rounded transition">
+                                ＋ カレンダー追加
+                            </button>
+                        </div>
+                    `;
+                }
+                listEl.innerHTML = htmlStr;
+
+            } catch (error) {
+                console.error(error);
+                messageEl.innerHTML = '<p class="text-red-500">メールの取得に失敗しました。</p>';
+            } finally {
+                btn.innerText = 'GmailからANAの予約メールを探す';
+                btn.removeAttribute('disabled');
+            }
+        }
+
+        // Gmail特有のBase64エンコードされた本文を日本語テキストに変換する関数
+        function getEmailBodyStr(payload) {
+            let base64url = "";
+            // multipart/alternative等の場合
+            if (payload.parts) {
+                for (let part of payload.parts) {
+                    if (part.mimeType === 'text/plain' && part.body && part.body.data) {
+                        base64url = part.body.data;
+                        break;
+                    }
+                }
+                if (!base64url && payload.parts[0].body) base64url = payload.parts[0].body.data;
+            } else if (payload.body && payload.body.data) {
+                // プレーンテキストのみの場合
+                base64url = payload.body.data;
+            }
+
+            if (!base64url) return "";
+
+            // URLセーフBase64を通常のBase64に戻す
+            const base64 = base64url.replace(/-/g, '+').replace(/_/g, '/');
+            // Base64をバイナリデータに変換し、UTF-8としてデコード（文字化け対策）
+            const binary = atob(base64);
+            const bytes = new Uint8Array(binary.length);
+            for (let i = 0; i < binary.length; i++) {
+                bytes[i] = binary.charCodeAt(i);
+            }
+            return new TextDecoder('utf-8').decode(bytes);
+        }
+
+        // ==========================================
+        // 2. 選択したメールを解析してカレンダーに登録
+        // ==========================================
+        async function parseAndAddCalendar(emailIndex) {
+            const text = fetchedEmails[emailIndex];
+            const messageEl = document.getElementById('result-message');
+            messageEl.innerText = 'カレンダーに登録中...';
+
+            try {
+                // 前回完成させた解析ロジックを使用
                 const flightInfo = parseAnaEmail(text);
                 
                 const event = {
@@ -148,14 +267,13 @@
 
                 const createdEvent = response.result;
 
-                messageEl.className = 'text-left bg-green-50 border border-green-200 p-4 rounded-lg space-y-2 text-slate-700';
+                messageEl.className = 'text-left bg-green-50 border border-green-200 p-4 rounded-lg space-y-2 text-slate-700 mt-4';
                 messageEl.innerHTML = `
                     <p class="font-bold text-green-700">✓ カレンダーへの登録が完了しました！</p>
                     <div class="text-xs space-y-1 bg-white p-2 rounded border border-green-100">
                         <p><strong>認識された便名:</strong> ${flightInfo.flightNumber}</p>
                         <p><strong>区間:</strong> ${flightInfo.departureAirport} → ${flightInfo.arrivalAirport}</p>
                         <p><strong>出発日時:</strong> ${flightInfo.departureDateTime}</p>
-                        <p><strong>座席:</strong> ${flightInfo.seat || '未指定'}</p>
                     </div>
                     <div class="text-center pt-2">
                         <a href="${createdEvent.htmlLink}" target="_blank" class="inline-block bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold px-4 py-2 rounded transition">
@@ -165,18 +283,16 @@
                 `;
             } catch (error) {
                 console.error(error);
-                messageEl.className = 'text-sm text-center font-medium text-red-600 bg-red-50 p-3 rounded-lg';
+                messageEl.className = 'text-sm text-center font-medium text-red-600 bg-red-50 p-3 rounded-lg mt-4';
                 messageEl.innerText = 'エラー: ' + (error.message || 'メールフォーマットの解析に失敗しました。');
             }
         }
 
-        // ANAメールの解析ロジック（フライト詳細優先 ＆ 未来の年自動判定）
+        // 前回の解析ロジック（そのまま）
         function parseAnaEmail(text) {
-            // 1. 「フライト詳細」以降のテキストを切り出す（予約日などの誤爆を防ぐ）
             const detailIndex = text.indexOf('フライト詳細');
             const targetText = detailIndex !== -1 ? text.substring(detailIndex) : text;
 
-            // 2. 月日を抽出 (例: 05月22日)
             const dateMatch = targetText.match(/(\d{1,2})月(\d{1,2})日/);
             if (!dateMatch) {
                 throw new Error("フライトの日付（〇月〇日）が見つかりませんでした。");
@@ -184,28 +300,24 @@
             const month = parseInt(dateMatch[1], 10);
             const day = parseInt(dateMatch[2], 10);
 
-            // 年の自動判定（今日より過去の月日の場合は、来年の年を自動設定する）
             const now = new Date();
             let year = now.getFullYear();
             const candidateDate = new Date(year, month - 1, day);
             if (candidateDate < now) {
-                year += 1; // 既に過ぎている日付なら来年にする（例: 2026年現在で5月なら2027年）
+                year += 1;
             }
 
             const yearStr = year.toString();
             const monthStr = month.toString().padStart(2, '0');
             const dayStr = day.toString().padStart(2, '0');
 
-            // 3. 便名を抽出 (例: NH381)
             const flightMatch = targetText.match(/([A-Z]{2}\d+|\d{3,4})/);
             const flightNumber = flightMatch ? flightMatch[1] : 'ANA';
 
-            // 4. 区間を抽出 (例: 東京(羽田) - 米子)
             const routeMatch = targetText.match(/([^\n\r]+?)\s*-\s*([^\n\r]+)/);
             const departureAirport = routeMatch ? routeMatch[1].trim() : '出発';
             const arrivalAirport = routeMatch ? routeMatch[2].trim() : '到着';
 
-            // 5. 出発・到着時間を抽出 (例: 06:55発08:10着)
             const timeMatch = targetText.match(/(\d{1,2}):(\d{2})発\s*(\d{1,2}):(\d{2})着/);
             if (!timeMatch) {
                 throw new Error("出発・到着時間が正しく抽出できませんでした。");
@@ -218,17 +330,11 @@
             const departureDateTime = `${yearStr}-${monthStr}-${dayStr}T${depHour}:${depMin}:00`;
             const arrivalDateTime = `${yearStr}-${monthStr}-${dayStr}T${arrHour}:${arrMin}:00`;
 
-            // 6. 座席番号の抽出
             const seatMatch = targetText.match(/座席番号[：:]\s*([A-Z0-9]+)/);
             const seat = seatMatch ? seatMatch[1] : null;
 
             return {
-                flightNumber,
-                departureDateTime,
-                arrivalDateTime,
-                departureAirport,
-                arrivalAirport,
-                seat
+                flightNumber, departureDateTime, arrivalDateTime, departureAirport, arrivalAirport, seat
             };
         }
     </script>
